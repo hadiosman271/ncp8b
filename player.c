@@ -1,128 +1,163 @@
 // TODO:
-//   display frames on time
-//   play audio with pipewire/pulse
-//   display in color
 //   error checking
+//   play audio
+//   sync audio and video
+//   display in color
 //   add controls
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
-#include <libavutil/log.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 
 #include <ncurses.h>
+#define KEY_ESC 27
 
 int main(int argc, char *argv[]) {
 	if (argc != 2) {
 		fprintf(stderr, "Usage: ncp8b [mp4 file]\n");
 		return -1;
 	}
-	av_log_set_level(AV_LOG_ERROR);
 	AVFormatContext *format_context = avformat_alloc_context();
 	avformat_open_input(&format_context, argv[1], NULL, NULL);
-	printf("format: %s, duration: %ld\n\n", format_context->iformat->long_name, format_context->duration);
-
-	AVCodecContext *video_codec_context = NULL;
-	AVStream *video_stream = NULL;
-	int video_stream_index = -1;
-	AVCodecContext *audio_codec_context = NULL;
-	int audio_stream_index = -1;
-
 	avformat_find_stream_info(format_context, NULL);
-	for (int i = 0; i < format_context->nb_streams; i++) {
-		AVCodecParameters *codec_parameters = format_context->streams[i]->codecpar;
-		AVCodec *codec = avcodec_find_decoder(codec_parameters->codec_id);
+	printf("format: %s, duration: %ld\n", format_context->iformat->long_name, format_context->duration);
 
-		if (codec_parameters->codec_type == AVMEDIA_TYPE_VIDEO) {
-			AVStream *s = format_context->streams[i];
-			printf("video codec: resolution: %dx%d, ", codec_parameters->width, codec_parameters->height);
-			printf("avg frame rate: %g, r frame rate: %g, time base: %g\n",
-				(float) s->avg_frame_rate.num / s->avg_frame_rate.den,
-				(float) s->r_frame_rate.num / s->r_frame_rate.den,
-				(float) s->time_base.num / s->time_base.den
+	AVStream *v_stream = NULL;
+	int v_stream_idx = -1;
+	AVCodecContext *v_codec_context = NULL;
+	AVStream *a_stream = NULL;
+	int a_stream_idx = -1;
+	AVCodecContext *a_codec_context = NULL;
+
+	for (int i = 0; i < format_context->nb_streams; i++) {
+		AVStream *s = format_context->streams[i];
+
+		if (v_stream == NULL && s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+			v_stream = s;
+			v_stream_idx = i;
+
+			AVCodec *codec = avcodec_find_decoder(s->codecpar->codec_id);
+			v_codec_context = avcodec_alloc_context3(codec);
+			avcodec_parameters_to_context(v_codec_context, s->codecpar);
+			avcodec_open2(v_codec_context, codec, NULL);
+
+			printf("video (%d):\n"
+				   "  resolution: %dx%d, frame rate: %d/%d, time base: %d/%d\n"
+				   "  codec: %s, bit rate: %ld\n",
+				i, s->codecpar->width, s->codecpar->height,
+				s->avg_frame_rate.num, s->avg_frame_rate.den,
+				s->time_base.num, s->time_base.den,
+				codec->long_name, s->codecpar->bit_rate
+		  	);
+		} else if (a_stream == NULL && s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+			a_stream = s;
+			a_stream_idx = i;
+
+			AVCodec *codec = avcodec_find_decoder(s->codecpar->codec_id);
+			a_codec_context = avcodec_alloc_context3(codec);
+			avcodec_parameters_to_context(a_codec_context, s->codecpar);
+			avcodec_open2(a_codec_context, codec, NULL);
+	
+			printf("audio (%d):\n"
+				   "  channels: %d, sample rate: %d, time base: %d/%d\n"
+				   "  codec: %s, bit rate: %ld\n",
+				i, s->codecpar->channels, s->codecpar->sample_rate,
+				s->time_base.num, s->time_base.den,
+				codec->long_name, s->codecpar->bit_rate
 			);
-			if (video_codec_context == NULL) {
-				video_stream_index = i;
-				video_stream = s;
-				video_codec_context = avcodec_alloc_context3(codec);
-				avcodec_parameters_to_context(video_codec_context, codec_parameters);
-				avcodec_open2(video_codec_context, codec, NULL);
-			}
-		} else if (codec_parameters->codec_type == AVMEDIA_TYPE_AUDIO) {
-			printf("audio codec: channels: %d, sample rate: %d\n", codec_parameters->channels, codec_parameters->sample_rate);
-			if (audio_codec_context == NULL) {
-				audio_stream_index = i;
-				audio_codec_context = avcodec_alloc_context3(codec);
-				avcodec_parameters_to_context(audio_codec_context, codec_parameters);
-				avcodec_open2(audio_codec_context, codec, NULL);
-			}
 		}
-		printf("codec: %s, id: %d, bitrate: %ld\n", codec->long_name, codec->id, codec_parameters->bit_rate);
 	}
-	printf("\n");
 
 	initscr(); cbreak(); noecho();
-	char brightness_char[13] = " .,-~:;=!*#$@";
-	int height = (float) LINES * (3. / 4.);
-	int width = height * ((float) video_stream->codecpar->width / video_stream->codecpar->height);
-
-	struct SwsContext *sws_context = sws_getContext(
-		video_stream->codecpar->width,
-		video_stream->codecpar->height,
-		video_stream->codecpar->format,
-		width, height, AV_PIX_FMT_RGB24, 0, NULL, NULL, NULL
-	);
-	AVFrame *rgbframe = av_frame_alloc();
-	av_image_alloc(rgbframe->data, rgbframe->linesize, width, height, AV_PIX_FMT_RGB24, 1);
+	keypad(stdscr, TRUE);
+	nodelay(stdscr, TRUE);
+	set_escdelay(1);
+	int height = LINES * (5. / 6.);
+	int width = height * ((float) v_stream->codecpar->width / v_stream->codecpar->height);
 
 	AVPacket *packet = av_packet_alloc();
 	AVFrame *frame = av_frame_alloc();
+	AVFrame *rgbframe = av_frame_alloc();
+	av_image_alloc(rgbframe->data, rgbframe->linesize, width, height, AV_PIX_FMT_RGB24, av_cpu_max_align());
+	struct SwsContext *sws_context = sws_getContext(
+		v_stream->codecpar->width, v_stream->codecpar->height,
+		v_stream->codecpar->format,
+		width, height, AV_PIX_FMT_RGB24, 0, NULL, NULL, NULL
+	);
 
-	while (av_read_frame(format_context, packet) >= 0) {
-		AVCodecContext *codec_context = NULL;
-		if (packet->stream_index == video_stream_index) {
-			codec_context = video_codec_context;
-		} else if (packet->stream_index == audio_stream_index) {
-			codec_context = audio_codec_context;
+	clock_t v_dt = 0, v_t1 = clock() * v_stream->time_base.den / CLOCKS_PER_SEC;
+	//clock_t a_dt = 0, a_t1 = clock() * a_stream->time_base.den / CLOCKS_PER_SEC;
+
+	int ch;
+	while ((ch = getch()) != KEY_ESC && ch != 'q') {
+		if (av_read_frame(format_context, packet) < 0)
+			break;
+
+		if (packet->stream_index == v_stream_idx) {
+			avcodec_send_packet(v_codec_context, packet);
+			int response = avcodec_receive_frame(v_codec_context, frame);
+			if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
+				av_packet_unref(packet);
+				continue;
+			}
+			sws_scale(sws_context, (const uint8_t * const *) frame->data, frame->linesize,
+				0, v_stream->codecpar->height,
+				rgbframe->data, rgbframe->linesize
+			);
+			// buffer frame
+		//} else if (packet->stream_index == a_stream_idx) {
+		//	avcodec_send_packet(a_codec_context, packet);
+		//    int response = avcodec_receive_frame(a_codec_context, frame);
+		//    if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
+		//    	av_packet_unref(packet);
+		//    	continue;
+		//    }
+		//    // buffer sample
 		} else {
-			continue;
-		}
-		avcodec_send_packet(codec_context, packet);
-		int response = avcodec_receive_frame(codec_context, frame);
-		if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
 			av_packet_unref(packet);
 			continue;
 		}
-		if (packet->stream_index == video_stream_index) {
-			sws_scale(sws_context, (const uint8_t * const *) frame->data, frame->linesize, 0,
-				video_stream->codecpar->height,
-				rgbframe->data, rgbframe->linesize
-			);
+
+		if (packet->stream_index == v_stream_idx) {
+			while (v_dt < frame->pts)
+				v_dt = clock() * v_stream->time_base.den / CLOCKS_PER_SEC - v_t1;
+
 			uint8_t *pixel = rgbframe->data[0];
+			int linesize = rgbframe->linesize[0];
 
 			move(0, 0);
 			for (int i = 0; i < width * height; i++) {
-				int index = (
-					0.299 * pixel[i * 3 + 1] +
-					0.587 * pixel[i * 3 + 1] +
-					0.114 * pixel[i * 3 + 1]
+				int idx = (i / width) * linesize + (i % width) * 3;
+				int brightness = (
+					0.299 * pixel[idx]     +
+					0.587 * pixel[idx + 1] +
+					0.114 * pixel[idx + 2]
 				) / 256. * 13.;
-				char ch = brightness_char[index];
+				char ch = " .,-~:;=!*#$@"[brightness];
 				addch(ch); addch(ch);
-				attrset(A_NORMAL);
 				if ((i + 1) % width == 0) addch('\n');
 			}
-			printw("frame %3d: pts: %5ld, dts: %5ld\n", codec_context->frame_number, frame->pts, frame->pkt_dts);
+			attrset(A_NORMAL);
+			printw("frame %3d: pts: %5ld\n", v_codec_context->frame_number, frame->pts);
 			refresh();
-			getch();
 		}
+
 		av_packet_unref(packet);
+
+		v_dt = clock() * v_stream->time_base.den / CLOCKS_PER_SEC - v_t1;
+		// if (v_dt >= closest v_frame_pts)
+			// display frame; free frame
+
+		//a_dt = clock() * a_stream->time_base.den / CLOCKS_PER_SEC - a_t1;
+		// if (a_dt >= closest a_frame_pts)
+			// play sample; free sample
 	}
 
 	endwin();
@@ -134,8 +169,8 @@ int main(int argc, char *argv[]) {
 	av_frame_free(&rgbframe);
 	sws_freeContext(sws_context);
 
-	avcodec_free_context(&video_codec_context);
-	avcodec_free_context(&audio_codec_context);
+	avcodec_free_context(&v_codec_context);
+	avcodec_free_context(&a_codec_context);
 	avformat_close_input(&format_context);
 
 	return 0;
