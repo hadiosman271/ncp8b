@@ -1,177 +1,119 @@
 // TODO:
 //   error checking
 //   play audio
-//   sync audio and video
 //   display in color
 //   add controls
+//   make player fill window
+//   handle window resizes
+//   display libav logs properly
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <time.h>
-
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-#include <libavutil/imgutils.h>
-#include <libswscale/swscale.h>
 
 #include <ncurses.h>
 #define KEY_ESC 27
 
+#include "media.h"
+#include "log.h"
+
 int main(int argc, char *argv[]) {
 	if (argc != 2) {
-		fprintf(stderr, "Usage: ncp8b [mp4 file]\n");
+		fprintf(stderr, "terminal video player\n");
+		fprintf(stderr, "usage: ncp8b [media file]\n");
 		return -1;
 	}
-	AVFormatContext *format_context = avformat_alloc_context();
-	avformat_open_input(&format_context, argv[1], NULL, NULL);
-	avformat_find_stream_info(format_context, NULL);
-	printf("format: %s, duration: %ld\n", format_context->iformat->long_name, format_context->duration);
-
-	AVStream *v_stream = NULL;
-	int v_stream_idx = -1;
-	AVCodecContext *v_codec_context = NULL;
-	AVStream *a_stream = NULL;
-	int a_stream_idx = -1;
-	AVCodecContext *a_codec_context = NULL;
-
-	for (int i = 0; i < format_context->nb_streams; i++) {
-		AVStream *s = format_context->streams[i];
-
-		if (v_stream == NULL && s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-			v_stream = s;
-			v_stream_idx = i;
-
-			AVCodec *codec = avcodec_find_decoder(s->codecpar->codec_id);
-			v_codec_context = avcodec_alloc_context3(codec);
-			avcodec_parameters_to_context(v_codec_context, s->codecpar);
-			avcodec_open2(v_codec_context, codec, NULL);
-
-			printf("video (%d):\n"
-				   "  resolution: %dx%d, frame rate: %d/%d, time base: %d/%d\n"
-				   "  codec: %s, bit rate: %ld\n",
-				i, s->codecpar->width, s->codecpar->height,
-				s->avg_frame_rate.num, s->avg_frame_rate.den,
-				s->time_base.num, s->time_base.den,
-				codec->long_name, s->codecpar->bit_rate
-		  	);
-		} else if (a_stream == NULL && s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-			a_stream = s;
-			a_stream_idx = i;
-
-			AVCodec *codec = avcodec_find_decoder(s->codecpar->codec_id);
-			a_codec_context = avcodec_alloc_context3(codec);
-			avcodec_parameters_to_context(a_codec_context, s->codecpar);
-			avcodec_open2(a_codec_context, codec, NULL);
-	
-			printf("audio (%d):\n"
-				   "  channels: %d, sample rate: %d, time base: %d/%d\n"
-				   "  codec: %s, bit rate: %ld\n",
-				i, s->codecpar->channels, s->codecpar->sample_rate,
-				s->time_base.num, s->time_base.den,
-				codec->long_name, s->codecpar->bit_rate
-			);
-		}
-	}
-
 	initscr(); cbreak(); noecho();
-	keypad(stdscr, TRUE);
-	nodelay(stdscr, TRUE);
 	set_escdelay(1);
-	int height = LINES * (5. / 6.);
-	int width = height * ((float) v_stream->codecpar->width / v_stream->codecpar->height);
+	curs_set(0);
+	start_color(); use_default_colors();
+	for (int i = 0; i < 256; i++)
+		init_pair(i, i, -1);
 
-	AVPacket *packet = av_packet_alloc();
-	AVFrame *frame = av_frame_alloc();
-	AVFrame *rgbframe = av_frame_alloc();
-	av_image_alloc(rgbframe->data, rgbframe->linesize, width, height, AV_PIX_FMT_RGB24, av_cpu_max_align());
-	struct SwsContext *sws_context = sws_getContext(
-		v_stream->codecpar->width, v_stream->codecpar->height,
-		v_stream->codecpar->format,
-		width, height, AV_PIX_FMT_RGB24, 0, NULL, NULL, NULL
-	);
+	WINDOW *player = newwin(0, 0, 0, 0);
+	WINDOW *info = newwin(0, 0, 0, 0);
 
-	clock_t v_dt = 0, v_t1 = clock() * v_stream->time_base.den / CLOCKS_PER_SEC;
-	//clock_t a_dt = 0, a_t1 = clock() * a_stream->time_base.den / CLOCKS_PER_SEC;
+	av_log_pad = newpad(1000, COLS);
+	int av_log_line = LINES;
+	av_log_set_callback(av_log_callback);
+	av_log_set_level(AV_LOG_DEBUG);
 
+	struct Media *m = media_open(argv[1]);
+	if (m == NULL) {
+		refresh();
+		getch();
+		delwin(player);
+		delwin(info);
+		delwin(av_log_pad);
+		endwin();
+		return -1;
+	}
+	wmove(info, 3, 0);
+	media_print_info(info, m);
+
+	int height = LINES;
+	int width = height * ((float) m->video.s->codecpar->width / m->video.s->codecpar->height);
+
+	media_set_video_size(m, width, height);
+
+	nodelay(player,     TRUE); keypad(player,     TRUE);
+	nodelay(info,       TRUE); keypad(info,       TRUE);
+	nodelay(av_log_pad, TRUE); keypad(av_log_pad, TRUE);
+
+	WINDOW *win = player;
 	int ch;
-	while ((ch = getch()) != KEY_ESC && ch != 'q') {
-		if (av_read_frame(format_context, packet) < 0)
-			break;
+	while ((ch = wgetch(win)) != KEY_ESC && ch != 'q') {
+		// scrolling
+		if (ch == KEY_PPAGE && win == av_log_pad)
+			av_log_line > 10 ? av_log_line -= 10 : (av_log_line = 0);
+		if (ch == KEY_NPAGE && win == av_log_pad)
+			av_log_line < 1000 - LINES - 10 ? av_log_line += 10 : (av_log_line = 1000 - LINES);
 
-		if (packet->stream_index == v_stream_idx) {
-			avcodec_send_packet(v_codec_context, packet);
-			int response = avcodec_receive_frame(v_codec_context, frame);
-			if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
-				av_packet_unref(packet);
-				continue;
-			}
-			sws_scale(sws_context, (const uint8_t * const *) frame->data, frame->linesize,
-				0, v_stream->codecpar->height,
-				rgbframe->data, rgbframe->linesize
-			);
-			// buffer frame
-		//} else if (packet->stream_index == a_stream_idx) {
-		//	avcodec_send_packet(a_codec_context, packet);
-		//    int response = avcodec_receive_frame(a_codec_context, frame);
-		//    if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
-		//    	av_packet_unref(packet);
-		//    	continue;
-		//    }
-		//    // buffer sample
-		} else {
-			av_packet_unref(packet);
-			continue;
+		// cycle tabs
+		if (ch == '\t') {
+			if (win == player) win = info;
+			else if (win == info) win = av_log_pad;
+			else if (win == av_log_pad) win = player;
+			redrawwin(win);
 		}
 
-		if (packet->stream_index == v_stream_idx) {
-			while (v_dt < frame->pts)
-				v_dt = clock() * v_stream->time_base.den / CLOCKS_PER_SEC - v_t1;
-
-			uint8_t *pixel = rgbframe->data[0];
-			int linesize = rgbframe->linesize[0];
-
-			move(0, 0);
+		struct Frame frame = {0};
+		if (media_read_frame(m, &frame) == -1)
+			break;
+		if (frame.video != NULL) {
+			// display frame
+			uint8_t *pixel = frame.video->data[0];
+			int linesize = frame.video->linesize[0];
+			wmove(player, 0, 0);
 			for (int i = 0; i < width * height; i++) {
 				int idx = (i / width) * linesize + (i % width) * 3;
 				int brightness = (
-					0.299 * pixel[idx]     +
-					0.587 * pixel[idx + 1] +
-					0.114 * pixel[idx + 2]
-				) / 256. * 13.;
+					0.299 * pixel[idx]     + // r
+					0.587 * pixel[idx + 1] + // g
+					0.114 * pixel[idx + 2]   // b
+				) / 256. * 13.; // scale [0, 255) to [0, 13)
 				char ch = " .,-~:;=!*#$@"[brightness];
-				addch(ch); addch(ch);
-				if ((i + 1) % width == 0) addch('\n');
+				waddch(player, ch); waddch(player, ch);
+				if ((i + 1) % width == 0) waddch(player, '\n');
 			}
-			attrset(A_NORMAL);
-			printw("frame %3d: pts: %5ld\n", v_codec_context->frame_number, frame->pts);
-			refresh();
+
+			mvwprintw(info, 0, 0, "video frame %3d: pts: %5ld\n", frame.video->key_frame, frame.video->pts);
+		}
+		if (frame.audio != NULL) {
+			// play samples
+
+			mvwprintw(info, 1, 0, "audio frame %3d: pts: %6ld\n", frame.audio->key_frame, frame.audio->pts);
 		}
 
-		av_packet_unref(packet);
-
-		v_dt = clock() * v_stream->time_base.den / CLOCKS_PER_SEC - v_t1;
-		// if (v_dt >= closest v_frame_pts)
-			// display frame; free frame
-
-		//a_dt = clock() * a_stream->time_base.den / CLOCKS_PER_SEC - a_t1;
-		// if (a_dt >= closest a_frame_pts)
-			// play sample; free sample
+		if (win == av_log_pad)
+			prefresh(av_log_pad, av_log_line, 0, 0, 0, LINES - 1, COLS);
+		else
+			wrefresh(win);
 	}
 
+	media_close(m);
+
+	delwin(player);
+	delwin(info);
+	delwin(av_log_pad);
 	endwin();
-
-	av_packet_free(&packet);
-	av_frame_free(&frame);
-
-	av_freep(&rgbframe->data[0]);
-	av_frame_free(&rgbframe);
-	sws_freeContext(sws_context);
-
-	avcodec_free_context(&v_codec_context);
-	avcodec_free_context(&a_codec_context);
-	avformat_close_input(&format_context);
-
 	return 0;
 }
