@@ -52,6 +52,8 @@ int main(int argc, char *argv[]) {
 	int height = LINES;
 	int width = height * ((float) m->video.s->codecpar->width / m->video.s->codecpar->height);
 
+	wprintw(info, "\nplayer size (pixels): %dx%d\n", width, height);
+	wprintw(info, "screen size (chars): %dx%d\n", COLS, LINES);
 	media_set_video_size(m, width, height);
 
 	nodelay(player,     TRUE); keypad(player,     TRUE);
@@ -80,9 +82,10 @@ int main(int argc, char *argv[]) {
 			break;
 		if (frame.video != NULL) {
 			// display frame
+			int start = COLS / 2 - width;
 			uint8_t *pixel = frame.video->data[0];
 			int linesize = frame.video->linesize[0];
-			wmove(player, 0, 0);
+			wmove(player, 0, start);
 			for (int i = 0; i < width * height; i++) {
 				int idx = (i / width) * linesize + (i % width) * 3;
 				int brightness = (
@@ -92,7 +95,8 @@ int main(int argc, char *argv[]) {
 				) / 256. * 13.; // scale [0, 255) to [0, 13)
 				char ch = " .,-~:;=!*#$@"[brightness];
 				waddch(player, ch); waddch(player, ch);
-				if ((i + 1) % width == 0) waddch(player, '\n');
+				if ((i + 1) % width == 0)
+					wmove(player, getcury(player) + 1, start);
 			}
 
 			mvwprintw(info, 0, 0, "video frame %3d: pts: %5ld\n", frame.video->key_frame, frame.video->pts);
