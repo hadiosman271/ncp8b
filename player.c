@@ -1,16 +1,20 @@
 // TODO:
 //   error checking
-//   play audio
-//   display in color
-//   add controls
-//   make player fill window
 //   handle window resizes
-//   display libav logs properly
+//   media:
+//     add pause, play, and seeking
+//   player:
+//     play audio
+//     display in color
+//   logs:
+//     handle log overflow
+//     autoscroll libav logs
 
 #include <stdio.h>
 
 #include <ncurses.h>
 #define KEY_ESC 27
+#define CTRL(x) ((x) & 0x1f)
 
 #include "media.h"
 #include "log.h"
@@ -21,18 +25,18 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "usage: ncp8b [media file]\n");
 		return -1;
 	}
-	initscr(); cbreak(); noecho();
+	initscr(); cbreak(); noecho(); nonl();
 	set_escdelay(1);
 	curs_set(0);
 	start_color(); use_default_colors();
 	for (int i = 0; i < 256; i++)
 		init_pair(i, i, -1);
 
-	WINDOW *player = newwin(0, 0, 0, 0);
-	WINDOW *info = newwin(0, 0, 0, 0);
+	WINDOW *player = newwin(LINES - 1, COLS, 1, 0);
+	WINDOW *info = newwin(LINES - 1, COLS, 1, 0);
 
 	av_log_pad = newpad(1000, COLS);
-	int av_log_line = LINES;
+	int av_log_line = 0;
 	av_log_set_callback(av_log_callback);
 	av_log_set_level(AV_LOG_DEBUG);
 
@@ -49,31 +53,56 @@ int main(int argc, char *argv[]) {
 	wmove(info, 3, 0);
 	media_print_info(info, m);
 
-	int height = LINES;
+	int height = LINES - 1;
 	int width = height * ((float) m->video.s->codecpar->width / m->video.s->codecpar->height);
 
 	wprintw(info, "\nplayer size (pixels): %dx%d\n", width, height);
 	wprintw(info, "screen size (chars): %dx%d\n", COLS, LINES);
 	media_set_video_size(m, width, height);
 
-	nodelay(player,     TRUE); keypad(player,     TRUE);
-	nodelay(info,       TRUE); keypad(info,       TRUE);
-	nodelay(av_log_pad, TRUE); keypad(av_log_pad, TRUE);
-
+#define TABS 3
+	WINDOW *tab[TABS] = { player, info, av_log_pad };
+	const char *tab_name[TABS] = { "player", "media info", "libav logs" };
 	WINDOW *win = player;
+	int win_idx = 0;
+
+	move(0, COLS - 30);
+	for (int i = 0; i < TABS; i++) {
+		nodelay(tab[i], TRUE); keypad(tab[i], TRUE);
+
+		if (tab[i] == win) attrset(A_REVERSE);
+		printw("%s", tab_name[i]);
+		attrset(A_NORMAL);
+		printw("  ");
+	}
+
+	mvprintw(0, 0, " >  00:00");
+	refresh();
+
 	int ch;
 	while ((ch = wgetch(win)) != KEY_ESC && ch != 'q') {
 		// scrolling
-		if (ch == KEY_PPAGE && win == av_log_pad)
-			av_log_line > 10 ? av_log_line -= 10 : (av_log_line = 0);
-		if (ch == KEY_NPAGE && win == av_log_pad)
-			av_log_line < 1000 - LINES - 10 ? av_log_line += 10 : (av_log_line = 1000 - LINES);
+		if (win == av_log_pad) {
+			if (ch == CTRL('u') || ch == KEY_PPAGE)
+				av_log_line > 10 ? av_log_line -= 10 : (av_log_line = 0);
+			if (ch == CTRL('d') || ch == KEY_NPAGE)
+				av_log_line < 1000 - LINES - 10 ? av_log_line += 10 : (av_log_line = 1000 - LINES);
+			if (ch == 'g') av_log_line = 0;
+			if (ch == 'G') av_log_line = 1000 - LINES;
+		}
 
 		// cycle tabs
 		if (ch == '\t') {
-			if (win == player) win = info;
-			else if (win == info) win = av_log_pad;
-			else if (win == av_log_pad) win = player;
+			win_idx = (win_idx + 1) % TABS;
+			win = tab[win_idx];
+			move(0, COLS - 30);
+			for (int i = 0; i < TABS; i++) {
+				if (tab[i] == win) attrset(A_REVERSE);
+				printw("%s", tab_name[i]);
+				attrset(A_NORMAL);
+				printw("  ");
+			}
+			refresh();
 			redrawwin(win);
 		}
 
@@ -99,16 +128,16 @@ int main(int argc, char *argv[]) {
 					wmove(player, getcury(player) + 1, start);
 			}
 
-			mvwprintw(info, 0, 0, "video frame %3d: pts: %5ld\n", frame.video->key_frame, frame.video->pts);
+			mvwprintw(info, 0, 0, "video frame %4d: pts: %7ld\n", frame.video->key_frame, frame.video->pts);
 		}
 		if (frame.audio != NULL) {
 			// play samples
 
-			mvwprintw(info, 1, 0, "audio frame %3d: pts: %6ld\n", frame.audio->key_frame, frame.audio->pts);
+			mvwprintw(info, 1, 0, "audio frame %4d: pts: %7ld\n", frame.audio->key_frame, frame.audio->pts);
 		}
 
 		if (win == av_log_pad)
-			prefresh(av_log_pad, av_log_line, 0, 0, 0, LINES - 1, COLS);
+			prefresh(av_log_pad, av_log_line, 0, 1, 0, LINES - 1, COLS);
 		else
 			wrefresh(win);
 	}
@@ -119,5 +148,6 @@ int main(int argc, char *argv[]) {
 	delwin(info);
 	delwin(av_log_pad);
 	endwin();
+
 	return 0;
 }
