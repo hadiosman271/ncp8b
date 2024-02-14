@@ -4,6 +4,7 @@
 #include "log.h"
 
 WINDOW *av_log_pad = NULL;
+int av_log_lines;
 
 static const uint32_t color[16 + AV_CLASS_CATEGORY_NB] = {
     [AV_LOG_PANIC  / 8] =  52 << 16 | 196 << 8 | 0x41,
@@ -170,4 +171,7 @@ void av_log_callback(void* ptr, int level, const char* fmt, va_list vl) {
     colored_fputs(av_clip(level >> 3, 0, NB_LEVELS - 1), tint >> 8, part[2].str);
     sanitize(part[3].str);
     colored_fputs(av_clip(level >> 3, 0, NB_LEVELS - 1), tint >> 8, part[3].str);
+
+	if (av_log_lines < LOG_MAX_LINES - LINES)
+		av_log_lines++;
 }

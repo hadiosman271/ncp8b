@@ -8,7 +8,7 @@
 //     display in color
 //   logs:
 //     handle log overflow
-//     autoscroll libav logs
+//     fix log levels
 
 #include <stdio.h>
 
@@ -78,10 +78,12 @@ int main(int argc, char *argv[]) {
 	WINDOW *player = newwin(LINES - 1, COLS, 1, 0);
 	WINDOW *info = newwin(LINES - 1, COLS, 1, 0);
 
-	av_log_pad = newpad(1000, COLS);
-	int av_log_line = 0;
+	av_log_pad = newpad(LOG_MAX_LINES, COLS);
+	extern int av_log_lines;
+	int log_line = 0;
+	bool log_end = true;
 	av_log_set_callback(av_log_callback);
-	av_log_set_level(AV_LOG_DEBUG);
+	av_log_set_level(AV_LOG_INFO);
 
 	AVFormatContext *audio_output_ctx;
 	AVStream *audio_output_stream;
@@ -130,13 +132,30 @@ int main(int argc, char *argv[]) {
 	int ch;
 	while ((ch = wgetch(win)) != KEY_ESC && ch != 'q') {
 		// scrolling
+		// i should do this better
 		if (win == av_log_pad) {
-			if (ch == CTRL('u') || ch == KEY_PPAGE)
-				av_log_line > 10 ? av_log_line -= 10 : (av_log_line = 0);
-			if (ch == CTRL('d') || ch == KEY_NPAGE)
-				av_log_line < 1000 - LINES - 10 ? av_log_line += 10 : (av_log_line = 1000 - LINES);
-			if (ch == 'g') av_log_line = 0;
-			if (ch == 'G') av_log_line = 1000 - LINES;
+			if (ch == CTRL('u') || ch == KEY_PPAGE) {
+				log_line > 10 ? log_line -= 10 : (log_line = 0);
+				log_end = false;
+			}
+			if (ch == CTRL('d') || ch == KEY_NPAGE) {
+				log_line < av_log_lines - LINES - 10 ? log_line += 10 : (log_line = av_log_lines - LINES);
+				log_end = false;
+			}
+			if (ch == 'g') {
+				log_line = 0;
+				log_end = false;
+			}
+			if (ch == 'G') {
+				log_line = av_log_lines - LINES;
+				log_end = false;
+			}
+
+			if (log_end) {
+				log_line = av_log_lines - LINES;
+			} else if (log_line == av_log_lines - LINES) {
+				log_end = true;
+			}
 		}
 
 		// cycle tabs
@@ -222,7 +241,7 @@ int main(int argc, char *argv[]) {
 		}
 
 		if (win == av_log_pad)
-			prefresh(av_log_pad, av_log_line, 0, 1, 0, LINES - 1, COLS);
+			prefresh(av_log_pad, log_line, 0, 1, 0, LINES - 1, COLS);
 		else
 			wrefresh(win);
 	}
