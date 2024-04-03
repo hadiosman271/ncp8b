@@ -1,7 +1,7 @@
 # ncp8b
 
 ## (unfinished)
-[Demo](ncp8b_demo.gif)
+![Demo](ncp8b_demo.gif)
 
 A video player that renders frames as ASCII art, using the ffmpeg API for video decoding and ncurses for terminal manipulation.  
 ncp8b is an acronym for '**nc**urses **p**layer, **8** **b**it' ~~(output is in 8 bit color)~~.  
