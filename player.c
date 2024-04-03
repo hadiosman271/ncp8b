@@ -1,6 +1,8 @@
 // TODO:
+//   use less cpu
 //   error checking
 //   handle window resizes
+//   load video file in main loop
 //   media:
 //     add pause, play, and seeking
 //   player:
@@ -16,55 +18,121 @@
 #define KEY_ESC 27
 #define CTRL(x) ((x) & 0x1f)
 
-#include <libavdevice/avdevice.h>
-
 #include "media.h"
 #include "log.h"
 
-void audio_prepare_output(AVFormatContext **ctx, AVStream **stream, AVCodecContext **codec_ctx) {
-	avdevice_register_all();
-	*ctx = NULL;
-	*stream = NULL;
-	*codec_ctx = NULL;
-	AVOutputFormat *device = NULL;
+typedef struct {
+	int player_width, player_height;
 
-	// there might be a better way to find the first working audio device
-	while ((device = av_output_audio_device_next(device)) != NULL) {
-		avformat_alloc_output_context2(ctx, device, NULL, NULL);
-		*stream = avformat_new_stream(*ctx, NULL);
+	int log_cur_line;
+	bool log_snap_end;
 
-		AVCodec *codec = avcodec_find_encoder(device->audio_codec);
-		*codec_ctx = avcodec_alloc_context3(codec);
+#define TABS 3
+	WINDOW *tab[TABS];
+	const char *tab_name[TABS];
 
-		(*codec_ctx)->sample_rate = 196000;
-		(*codec_ctx)->channels = 2;
-		(*codec_ctx)->channel_layout = av_get_default_channel_layout(2);	
+	WINDOW *win;
+	int win_idx;
+} State;
 
-		avcodec_parameters_from_context((*stream)->codecpar, *codec_ctx);
-		if (avformat_write_header(*ctx, NULL) >= 0)
-			break;
 
-		avcodec_free_context(codec_ctx);
-		avformat_free_context(*ctx);
-		*ctx = NULL;
-		*stream = NULL;
-	}
+void resize_player(State *s, struct Media *m) {
+	s->player_height = LINES - 1;
+	s->player_width = s->player_height * ((float) m->video.s->codecpar->width / m->video.s->codecpar->height);
 
-	if (device == NULL)
-		av_log(NULL, AV_LOG_ERROR, "can\'t open output audio device\n");
+	m_set_video_size(m, s->player_width, s->player_height);
 }
 
-void audio_end_output(AVFormatContext **ctx, AVCodecContext **codec_ctx) {
-	// add null checks
-	av_write_trailer(*ctx);
-	avcodec_free_context(codec_ctx);
-	avformat_free_context(*ctx);
+void print_tab_bar(State s) {
+	move(0, COLS - 30);
+	for (int i = 0; i < TABS; i++) {
+		if (s.tab[i] == s.win) {
+			attrset(A_REVERSE);
+		}
+		printw("%s", s.tab_name[i]);
+		attrset(A_NORMAL);
+		printw("  ");
+	}
+}
+
+void print_playback_info(State s) {
+	// fake!
+	mvprintw(0, 0, " >  00:00");
+}
+
+void print_frame_info(State s, struct Media *m, AVFrame *video, AVFrame *audio) {
+	WINDOW *info = s.tab[1];
+
+	if (video != NULL) {
+		wmove(info, 12, 0);
+		wprintw(info, "video:\n"
+				"  frame: %4d/%4d: pts: %6ld dt: %6ld\n"
+				"  queue: start: %2ld size: %2ld\n",
+			video->key_frame, m->video.codec_ctx->frame_number, video->pts, m->video.dt,
+			m->video.queue.start, m->video.queue.size
+		);
+	}
+
+	if (audio != NULL) {
+		wmove(info, 15, 0);
+		wprintw(info, "audio:\n"
+				"  frame: %4d/%4d: pts: %7ld dt: %7ld\n"
+				"  queue: start: %2ld size: %2ld\n",
+			audio->key_frame, m->audio.codec_ctx->frame_number, audio->pts, m->audio.dt,
+			m->audio.queue.start, m->audio.queue.size
+		);
+	}
+}
+
+int rgb2ansi(uint8_t *pixel) {
+	uint8_t r = pixel[0], g = pixel[1], b = pixel[2];
+	// TODO
+	return 0;
+}
+
+void print_frame(State s, AVFrame *video) {
+	WINDOW *player = s.tab[0];
+
+	int start = COLS / 2 - s.player_width;
+	uint8_t *pixel = video->data[0];
+	int linesize = video->linesize[0];
+
+	wmove(player, 0, start);
+	for (int i = 0; i < s.player_width * s.player_height; i++) {
+		int idx = (i / s.player_width) * linesize + (i % s.player_width) * 3;
+
+		int brightness = (
+			0.299 * pixel[idx]     + // r
+			0.587 * pixel[idx + 1] + // g
+			0.114 * pixel[idx + 2]   // b
+		) / 256. * 13.; // scale [0, 256) to [0, 13)
+
+		attrset(COLOR_PAIR(rgb2ansi(pixel)));
+		char ch = " .,-~:;=!*#$@"[brightness];
+		waddch(player, ch); waddch(player, ch);
+		attrset(A_NORMAL);
+
+		if ((i + 1) % s.player_width == 0) {
+			wmove(player, getcury(player) + 1, start);
+		}
+	}
+}
+
+void print_audio_bar(State s) {
+	// TODO
+}
+
+void end_all(State s) {
+	for (int i = 0; i < TABS; i++) {
+		delwin(s.tab[i]);
+	}
+	endwin();
 }
 
 int main(int argc, char *argv[]) {
 	if (argc != 2) {
 		fprintf(stderr, "terminal video player\n");
-		fprintf(stderr, "usage: ncp8b [media file]\n");
+		fprintf(stderr, "usage: ncp8b [video_file_path]\n");
 		return -1;
 	}
 
@@ -72,188 +140,162 @@ int main(int argc, char *argv[]) {
 	set_escdelay(1);
 	curs_set(0);
 	start_color(); use_default_colors();
-	for (int i = 0; i < 256; i++)
+	for (int i = 0; i < 256; i++) {
 		init_pair(i, i, -1);
+	}
 
-	WINDOW *player = newwin(LINES - 1, COLS, 1, 0);
-	WINDOW *info = newwin(LINES - 1, COLS, 1, 0);
+	State s = {
+		.tab_name[0] = "player",     .tab[0] = newwin(LINES - 1, COLS, 1, 0),
+		.tab_name[1] = "media info", .tab[1] = newwin(LINES - 1, COLS, 1, 0),
+		.tab_name[2] = "libav logs", .tab[2] = newpad(LOG_MAX_LINES, COLS),
+	};
 
-	av_log_pad = newpad(LOG_MAX_LINES, COLS);
+	WINDOW *player = s.tab[0];
+	WINDOW *info   = s.tab[1];
+	av_log_pad     = s.tab[2];
+
+	s.win = player;
+	s.win_idx = 0;
+
+	// settings for every tab
+	for (int i = 0; i < TABS; i++) {
+		nodelay(s.tab[i], TRUE);
+		keypad(s.tab[i], TRUE);
+	}
+
+	// init logging
 	extern int av_log_lines;
-	int log_line = 0;
-	bool log_end = true;
+	s.log_cur_line = 0;
+	s.log_snap_end = true;
 	av_log_set_callback(av_log_callback);
 	av_log_set_level(AV_LOG_INFO);
 
-	AVFormatContext *audio_output_ctx;
-	AVStream *audio_output_stream;
-	AVCodecContext *audio_output_codec_ctx;
-	audio_prepare_output(&audio_output_ctx, &audio_output_stream, &audio_output_codec_ctx);
-
-	struct Media *m = media_open(argv[1]);
+	// TODO: load file in main loop
+	struct Media *m = m_open(argv[1]);
 	if (m == NULL) {
-		refresh();
+		refresh(); // to show any errors
 		getch();
-		delwin(player);
-		delwin(info);
-		delwin(av_log_pad);
-		endwin();
+
+		end_all(s);
 		return -1;
 	}
-	media_print_info(info, m);
 
-	int height = LINES - 1;
-	int width = height * ((float) m->video.s->codecpar->width / m->video.s->codecpar->height);
+	m_print_info(info, m);
 
-	media_set_video_size(m, width, height);
-	wprintw(info, "\nplayer size (pixels): %dx%d\n", width, height);
+	resize_player(&s, m);
+
+	wprintw(info, "\nplayer size (pixels): %dx%d\n", s.player_width, s.player_height);
 	wprintw(info, "screen size (chars): %dx%d", COLS, LINES);
 
-#define TABS 3
-	WINDOW *tab[TABS] = { player, info, av_log_pad };
-	const char *tab_name[TABS] = { "player", "media info", "libav logs" };
-	WINDOW *win = player;
-	int win_idx = 0;
+	print_tab_bar(s);
+	print_playback_info(s);
 
-	move(0, COLS - 30);
-	for (int i = 0; i < TABS; i++) {
-		nodelay(tab[i], TRUE); keypad(tab[i], TRUE);
-
-		if (tab[i] == win) attrset(A_REVERSE);
-		printw("%s", tab_name[i]);
-		attrset(A_NORMAL);
-		printw("  ");
-	}
-
-	mvprintw(0, 0, " >  00:00");
 	refresh();
+
+	// TODO
+	const char *filename = NULL;
+	bool reading_line = false;
 
 	AVFrame *video = NULL, *audio = NULL;
 	int ch;
-	while ((ch = wgetch(win)) != KEY_ESC && ch != 'q') {
-		// scrolling
-		// i should do this better
-		if (win == av_log_pad) {
-			if (ch == CTRL('u') || ch == KEY_PPAGE) {
-				log_line > 10 ? log_line -= 10 : (log_line = 0);
-				log_end = false;
+	while ((ch = wgetch(s.win)) != KEY_ESC && ch != 'q') {
+		if (!reading_line) {
+			if (ch == ':') {
+				reading_line = true;
 			}
-			if (ch == CTRL('d') || ch == KEY_NPAGE) {
-				log_line < av_log_lines - LINES - 10 ? log_line += 10 : (log_line = av_log_lines - LINES);
-				log_end = false;
-			}
-			if (ch == 'g') {
-				log_line = 0;
-				log_end = false;
-			}
-			if (ch == 'G') {
-				log_line = av_log_lines - LINES;
-				log_end = false;
+			// scrolling
+			if (s.win == av_log_pad) {
+				switch (ch) {
+				case CTRL('u'): case KEY_PPAGE:
+					s.log_cur_line > 10 ? s.log_cur_line -= 10 : (s.log_cur_line = 0);
+					s.log_snap_end = false;
+					break;
+				case CTRL('d'): case KEY_NPAGE:
+					s.log_cur_line < av_log_lines - LINES - 10 ? s.log_cur_line += 10 : (s.log_cur_line = av_log_lines - LINES);
+					s.log_snap_end = false;
+					break;
+				case 'g':
+					s.log_cur_line = 0;
+					s.log_snap_end = false;
+					break;
+				case 'G':
+					s.log_cur_line = av_log_lines - LINES;
+					s.log_snap_end = false;
+					break;
+				}
+
+				if (s.log_snap_end) {
+					s.log_cur_line = av_log_lines - LINES;
+				} else if (s.log_cur_line == av_log_lines - LINES) {
+					s.log_snap_end = true;
+				}
+			} else if (s.win == player) {
+				// seeking
+				switch (ch) {
+				case KEY_LEFT:
+					m_seek(m, -5000);
+					break;
+				case KEY_RIGHT:
+					m_seek(m, 5000);
+					break;
+				case ' ':
+					m_toggle_pause(m);
+					break;
+				}
 			}
 
-			if (log_end) {
-				log_line = av_log_lines - LINES;
-			} else if (log_line == av_log_lines - LINES) {
-				log_end = true;
+			if (ch == '\t') {
+				// cycle tabs
+				s.win_idx = (s.win_idx + 1) % TABS;
+				s.win = s.tab[s.win_idx];
+
+				print_tab_bar(s);
+				refresh();
+				redrawwin(s.win);
 			}
 		}
-
-		// cycle tabs
-		if (ch == '\t') {
-			win_idx = (win_idx + 1) % TABS;
-			win = tab[win_idx];
-			move(0, COLS - 30);
-			for (int i = 0; i < TABS; i++) {
-				if (tab[i] == win) attrset(A_REVERSE);
-				printw("%s", tab_name[i]);
-				attrset(A_NORMAL);
-				printw("  ");
-			}
-			refresh();
-			redrawwin(win);
+		if (reading_line) {
+			// read file name
 		}
 
-		int ret = media_decode_frame(m);
 
-		if (video == NULL && m->video.queue.size > 0)
-			video = m->video.queue.frame[m->video.queue.start];
-		if (audio == NULL && m->audio.queue.size > 0)
-			audio = m->audio.queue.frame[m->audio.queue.start];
-
-		if (ret == -1 && video == NULL && audio == NULL)
+		int ret = m_decode_frame(m);
+		if (ret == -1 && video == NULL && audio == NULL) {
 			break;
+		}
+
+		if (video == NULL) {
+			video = m_queue_peek(m->video.queue);
+		}
+		if (audio == NULL) {
+			audio = m_queue_peek(m->audio.queue);
+		}
+		print_frame_info(s, m, video, audio);
  
 		if (video != NULL && m->video.dt >= video->pts) {
-			// display frame
-			int start = COLS / 2 - width;
-			uint8_t *pixel = video->data[0];
-			int linesize = video->linesize[0];
-			wmove(player, 0, start);
-			for (int i = 0; i < width * height; i++) {
-				int idx = (i / width) * linesize + (i % width) * 3;
-				int brightness = (
-					0.299 * pixel[idx]     + // r
-					0.587 * pixel[idx + 1] + // g
-					0.114 * pixel[idx + 2]   // b
-				) / 256. * 13.; // scale [0, 256) to [0, 13)
-				char ch = " .,-~:;=!*#$@"[brightness];
-				waddch(player, ch); waddch(player, ch);
-				if ((i + 1) % width == 0)
-					wmove(player, getcury(player) + 1, start);
-			}
+			print_frame(s, video);
 
-			wmove(info, 12, 0);
-			wprintw(info, "video:\n"
-					"  frame: %4d/%4d: pts: %6ld dt: %6ld\n"
-					"  queue: start: %2ld size: %2ld\n",
-				video->key_frame, m->video.codec_ctx->frame_number, video->pts, m->video.dt,
-				m->video.queue.start, m->video.queue.size
-			);
-
+			m_queue_pop(&m->video.queue);
 			video = NULL;
-			m->video.queue.start = (m->video.queue.start + 1) % QUEUE_SIZE;
-			m->video.queue.size--;
 		}
 		if (audio != NULL && m->audio.dt >= audio->pts) {
-			// show audio bar
+			print_audio_bar(s);
 
-			// TODO: encode and write audio frame
-			//avcodec_send_frame(audio_output_codec_ctx, audio);
-			//int response = avcodec_receive_packet(audio_output_codec_ctx, m->_av_packet);
-			//if (response != AVERROR(EAGAIN) && response != AVERROR_EOF) {
-			//	m->_av_packet->stream_index = 0;
-			//	av_packet_rescale_ts(m->_av_packet, m->audio.s->time_base, audio_output_stream->time_base);
-			//	av_write_frame(audio_output_ctx, m->_av_packet);
-			//	av_packet_unref(m->_av_packet);
-			//}
-
-			wmove(info, 15, 0);
-			wprintw(info, "audio:\n"
-					"  frame: %4d/%4d: pts: %7ld dt: %7ld\n"
-					"  queue: start: %2ld size: %2ld\n",
-				audio->key_frame, m->audio.codec_ctx->frame_number, audio->pts, m->audio.dt,
-				m->audio.queue.start, m->audio.queue.size
-			);
-
+			m_queue_pop(&m->audio.queue);
 			audio = NULL;
-			m->audio.queue.start = (m->audio.queue.start + 1) % QUEUE_SIZE;
-			m->audio.queue.size--;
 		}
 
-		if (win == av_log_pad)
-			prefresh(av_log_pad, log_line, 0, 1, 0, LINES - 1, COLS);
-		else
-			wrefresh(win);
+		if (s.win == av_log_pad) {
+			prefresh(av_log_pad, s.log_cur_line, 0, 1, 0, LINES - 1, COLS);
+		}
+		else {
+			wrefresh(s.win);
+		}
 	}
 
-	audio_end_output(&audio_output_ctx, &audio_output_codec_ctx);
+	m_close(m);
 
-	media_close(m);
-
-	delwin(player);
-	delwin(info);
-	delwin(av_log_pad);
-	endwin();
+	end_all(s);
 
 	return 0;
 }

@@ -5,6 +5,28 @@
 
 #include "media.h"
 
+void m_seek(struct Media *m, int t) {
+	// TODO
+}
+
+void m_toggle_pause(struct Media *m) {
+	// TODO
+}
+
+AVFrame *m_queue_peek(struct FrameQueue q) {
+	if (q.size > 0) {
+		return q.frame[q.start];
+	}
+	else {
+		return NULL;
+	}
+}
+
+void m_queue_pop(struct FrameQueue *q) {
+	q->start = (q->start + 1) % QUEUE_SIZE;
+	q->size--;
+}
+
 int open_codec(struct Track *t) {
 	t->codec = avcodec_find_decoder(t->s->codecpar->codec_id);
 	t->codec_ctx = avcodec_alloc_context3(t->codec);
@@ -13,7 +35,7 @@ int open_codec(struct Track *t) {
 	return 0;
 }
 
-struct Media *media_open(const char *url) {
+struct Media *m_open(const char *url) {
 	av_log_set_level(AV_LOG_DEBUG);
 	struct Media *m = calloc(1, sizeof(struct Media));
 	m->format_ctx = NULL;
@@ -63,7 +85,7 @@ struct Media *media_open(const char *url) {
 	return m;
 }
 
-void media_close(struct Media *m) {
+void m_close(struct Media *m) {
 	for (int i = 0; i < QUEUE_SIZE; i++) {
 		av_freep(&m->video.queue.frame[i]->data[0]);
 		av_frame_free(&m->video.queue.frame[i]);
@@ -82,7 +104,7 @@ void media_close(struct Media *m) {
 	free(m);
 }
 
-void media_set_video_size(struct Media *m, int width, int height) {
+void m_set_video_size(struct Media *m, int width, int height) {
 	for (int i = 0; i < QUEUE_SIZE; i++) {
 		av_freep(&m->video.queue.frame[i]->data[0]);
 		av_image_alloc(m->video.queue.frame[i]->data, m->video.queue.frame[i]->linesize,
@@ -97,7 +119,7 @@ void media_set_video_size(struct Media *m, int width, int height) {
 	);
 }
 
-void media_print_info(WINDOW *win, struct Media *m) {
+void m_print_info(WINDOW *win, struct Media *m) {
 	wprintw(win, "%s:\nformat: %s, duration: %ld\n",
 		m->url, m->format_ctx->iformat->long_name, m->format_ctx->duration
 	);
@@ -119,7 +141,7 @@ void media_print_info(WINDOW *win, struct Media *m) {
 	);
 }
 
-int media_decode_frame(struct Media *m) {
+int m_decode_frame(struct Media *m) {
 	if (m->video.queue.size < QUEUE_SIZE && m->audio.queue.size < QUEUE_SIZE) {
 		if (av_read_frame(m->format_ctx, m->_av_packet) < 0)
 			return -1;

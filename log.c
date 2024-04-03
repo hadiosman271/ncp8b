@@ -1,6 +1,7 @@
 // modified from ffmpeg/libavutil/log.c (commit d61977c)
 
 #include <libavutil/bprint.h>
+#include <libavutil/common.h>
 #include "log.h"
 
 WINDOW *av_log_pad = NULL;

@@ -30,10 +30,18 @@ struct Media {
 	struct SwsContext *_sws_ctx;
 };
 
-struct Media *media_open(const char *url);
-void media_close(struct Media *m);
-void media_set_video_size(struct Media *m, int width, int height);
-void media_print_info(WINDOW *win, struct Media *m);
-int media_decode_frame(struct Media *m);
+struct Media *m_open(const char *url);
+void m_close(struct Media *m);
+
+void m_print_info(WINDOW *win, struct Media *m);
+
+void m_set_video_size(struct Media *m, int width, int height);
+int m_decode_frame(struct Media *m);
+// frame queue functions
+AVFrame *m_queue_peek(struct FrameQueue q);
+void m_queue_pop(struct FrameQueue *q);
+// playback functions
+void m_seek(struct Media *m, int t);
+void m_toggle_pause(struct Media *m);
 
 #endif /* stream.h */
