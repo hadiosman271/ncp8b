@@ -15,16 +15,22 @@ pub fn build(b: *std.Build) void {
 
 
     exe.addIncludePath(b.path("extern/include"));
+    exe.addIncludePath(b.path("extern/include/miniaudio"));
     const libs = [_][]const u8{
         "ncursesw", // ncurses: c
-        "avformat", "avcodec", "avutil", "swscale" // ffmpeg: c m z pthread drm
+        "miniaudio", // miniaudio
     };
     inline for (libs) |lib| {
-        exe.addObjectFile(b.path("extern/lib/lib"++lib++".a")); 
+        exe.addObjectFile(b.path("extern/lib/lib"++lib++".a"));
     }
-    const ma_prefix = "extern/include/miniaudio/";
-    exe.addIncludePath(b.path(ma_prefix));
-    exe.addCSourceFile(.{.file = b.path(ma_prefix++"miniaudio.c"), .flags = &.{"-fno-sanitize=undefined"}});
+
+    exe.addIncludePath(b.path("extern/ffmpeg-4.2.2/include"));
+    const libav_libs = [_][]const u8{
+        "avformat", "avcodec", "avutil", "swscale", // ffmpeg: c m z pthread drm
+    };
+    inline for (libav_libs) |lib| {
+        exe.addObjectFile(b.path("extern/ffmpeg-4.2.2/lib/lib"++lib++".a"));
+    }
 
     const system_libs = [_][]const u8{"c", "m", "z", "pthread", "drm"};
     inline for (system_libs) |lib| {
