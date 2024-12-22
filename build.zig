@@ -6,36 +6,31 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "ncp8b",
-        .root_source_file = b.path("ncp8b.zig"),
+        .root_source_file = b.path("src/ncp8b.zig"),
         .target = target,
         .optimize = optimize,
-        .strip = true,
     });
     b.installArtifact(exe);
+    exe.addCSourceFile(.{.file = b.path("src/c/log.c")});
 
 
-    exe.addIncludePath(b.path("extern/include"));
-    exe.addIncludePath(b.path("extern/include/miniaudio"));
-    const libs = [_][]const u8{
-        "ncursesw", // ncurses: c
-        "miniaudio", // miniaudio
-    };
-    inline for (libs) |lib| {
-        exe.addObjectFile(b.path("extern/lib/lib"++lib++".a"));
-    }
+    //// miniaudio
+    //exe.addIncludePath(b.path("extern/miniaudio-0.11.21"));
+    //exe.addObjectFile(b.path("extern/miniaudio-0.11.21/miniaudio.o"));
 
-    exe.addIncludePath(b.path("extern/ffmpeg-4.2.2/include"));
+    // ffmpeg
     const libav_libs = [_][]const u8{
-        "avformat", "avcodec", "avutil", "swscale", // ffmpeg: c m z pthread drm
+        "avformat", "avcodec", "avutil", "swscale", // need to link: c m z pthread drm
     };
-    inline for (libav_libs) |lib| {
-        exe.addObjectFile(b.path("extern/ffmpeg-4.2.2/lib/lib"++lib++".a"));
-    }
+    exe.addIncludePath(b.path("extern/ffmpeg-4.2.2/include"));
+    inline for (libav_libs) |lib| exe.addObjectFile(b.path("extern/ffmpeg-4.2.2/lib/lib"++lib++".a"));
 
-    const system_libs = [_][]const u8{"c", "m", "z", "pthread", "drm"};
-    inline for (system_libs) |lib| {
-        exe.linkSystemLibrary(lib);
-    }
+    exe.linkSystemLibrary("z");
+    exe.linkLibC();
+
+    // ncurses
+    exe.linkSystemLibrary("ncurses");
+
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
